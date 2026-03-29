@@ -1,5 +1,5 @@
-# import yfinance as yf
 import pytz
+import yfinance as yf
 import requests
 import pandas as pd
 from datetime import datetime
@@ -23,16 +23,26 @@ def get_sp500_tickers():
     return tickers
 
 
-def get_history(ticker, period_start, period_end, granularity="1d"):
-    import yfinance
-
-    df = (
-        yfinance.Ticker(ticker)
-        .history(
-            start=period_start, end=period_end, interval=granularity, auto_adjust=True
+def get_history(ticker, period_start, period_end, granularity="1d", tries=0):
+    try:
+        df = (
+            yf.Ticker(ticker)
+            .history(
+                start=period_start,
+                end=period_end,
+                interval=granularity,
+                auto_adjust=True,
+            )
+            .reset_index()
         )
-        .reset_index()
-    )
+    except Exception as err:
+        if tries < 5:
+            return get_history(ticker, period_start, period_end, granularity, tries + 1)
+        return pd.DataFrame()
+
+    if df.empty:
+        return pd.DataFrame()
+
     df = df.rename(
         columns={
             "Date": "datetime",
@@ -43,10 +53,12 @@ def get_history(ticker, period_start, period_end, granularity="1d"):
             "Volume": "volume",
         }
     )
-    if df.empty:
-        return pd.DataFrame()
+    df["datetime"] = (
+        df["datetime"].dt.tz_localize("UTC")
+        if df["datetime"].dt.tz is None
+        else df["datetime"].dt.tz_convert("UTC")
+    )
 
-    df["datetime"] = df["datetime"].dt.tz_convert(pytz.utc)
     df = df.drop(columns=["Dividends", "Stock Splits"])
     df = df.set_index("datetime", drop=True)
     return df
@@ -65,7 +77,7 @@ def get_histories(tickers, period_start, period_end, granularity="1d"):
                 tickers[i], period_start, period_end, granularity=granularity
             )
             if df is not None and not df.empty:
-                dfs[i] = df
+                dfs[i] = df  # type: ignore
         except Exception:
             pass
 
@@ -82,14 +94,19 @@ def get_histories(tickers, period_start, period_end, granularity="1d"):
 
 
 def get_ticker_dfs(start, end):
-    tickers = get_sp500_tickers()
-    starts = [start] * len(tickers)
-    ends = [end] * len(tickers)
-    tickers, dfs = get_histories(tickers[:30], starts, ends, granularity="1d")
-    return tickers, {ticker: df for ticker, df in zip(tickers, dfs)}
+    from utils import load_pickle, save_pickle
+
+    try:
+        tickers, ticker_dfs = load_pickle("dataset.obj")
+    except Exception as err:
+        tickers = get_sp500_tickers()
+        tickers, dfs = get_histories(tickers, start, end, granularity="1d")
+        ticker_dfs = {ticker: df for ticker, df in zip(tickers, dfs)}
+        save_pickle("dataset.obj", (tickers, ticker_dfs))
+    return tickers, ticker_dfs
 
 
-period_start = datetime(2015, 1, 1, tzinfo=pytz.utc)
-period_end = datetime(2026, 1, 1, tzinfo=pytz.utc)
+period_start = datetime(2010, 1, 1, tzinfo=pytz.utc)
+period_end = datetime.now(pytz.utc)
 tickers, tickers_dfs = get_ticker_dfs(start=period_start, end=period_end)
 print(tickers_dfs)
